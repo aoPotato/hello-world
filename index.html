@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>经典飞机大战</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at top, #1a2a4c 0%, #0b1221 50%, #050a14 100%);
+        font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+        color: #eaf2ff;
+      }
+
+      .game-shell {
+        position: relative;
+        width: min(92vw, 460px);
+        aspect-ratio: 2 / 3.2;
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08);
+        background: #080e1b;
+      }
+
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      .hud {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        padding: 14px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        font-size: 14px;
+        font-weight: 700;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+      }
+
+      .panel {
+        background: rgba(2, 11, 25, 0.5);
+        border: 1px solid rgba(142, 188, 255, 0.28);
+        border-radius: 10px;
+        padding: 8px 10px;
+        backdrop-filter: blur(2px);
+      }
+
+      .overlay {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        background: linear-gradient(to bottom, rgba(2, 10, 22, 0.72), rgba(2, 10, 22, 0.9));
+      }
+
+      .overlay[hidden] {
+        display: none;
+      }
+
+      .dialog {
+        width: min(92%, 360px);
+        background: rgba(4, 16, 36, 0.88);
+        border: 1px solid rgba(132, 184, 255, 0.35);
+        border-radius: 14px;
+        padding: 18px 20px;
+        text-align: center;
+      }
+
+      .dialog h1 {
+        margin: 0 0 10px;
+        font-size: 30px;
+      }
+
+      .dialog p {
+        margin: 8px 0;
+        color: #c5d9ff;
+        line-height: 1.55;
+      }
+
+      button {
+        margin-top: 14px;
+        border: none;
+        border-radius: 999px;
+        background: linear-gradient(120deg, #4aa9ff, #297eff);
+        color: #fff;
+        font-size: 16px;
+        font-weight: 700;
+        padding: 11px 26px;
+        cursor: pointer;
+        transition: transform 0.16s ease, filter 0.16s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        filter: brightness(1.05);
+      }
+
+      .hint {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #9cb9ec;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="game-shell">
+      <canvas id="game" width="420" height="680"></canvas>
+      <div class="hud">
+        <div class="panel" id="scoreText">得分：0</div>
+        <div class="panel" id="hpText">生命：3</div>
+      </div>
+
+      <div class="overlay" id="startOverlay">
+        <div class="dialog">
+          <h1>飞机大战</h1>
+          <p>键盘控制：WASD / 方向键</p>
+          <p>自动射击，击落敌机得分，避免撞击！</p>
+          <button id="startBtn">开始游戏</button>
+          <div class="hint">可在手机上拖动你的飞机</div>
+        </div>
+      </div>
+
+      <div class="overlay" id="gameOverOverlay" hidden>
+        <div class="dialog">
+          <h1>游戏结束</h1>
+          <p id="finalScore">本局得分：0</p>
+          <p id="bestScore">历史最高：0</p>
+          <button id="restartBtn">重新开始</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      (() => {
+        const canvas = document.getElementById("game");
+        const ctx = canvas.getContext("2d");
+        const scoreText = document.getElementById("scoreText");
+        const hpText = document.getElementById("hpText");
+        const finalScoreText = document.getElementById("finalScore");
+        const bestScoreText = document.getElementById("bestScore");
+        const startOverlay = document.getElementById("startOverlay");
+        const gameOverOverlay = document.getElementById("gameOverOverlay");
+        const startBtn = document.getElementById("startBtn");
+        const restartBtn = document.getElementById("restartBtn");
+
+        const KEY_MAP = {
+          ArrowLeft: "left",
+          ArrowRight: "right",
+          ArrowUp: "up",
+          ArrowDown: "down",
+          a: "left",
+          d: "right",
+          w: "up",
+          s: "down"
+        };
+
+        const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+        const gameState = {
+          running: false,
+          score: 0,
+          hp: 3,
+          bullets: [],
+          enemies: [],
+          stars: [],
+          keys: {
+            left: false,
+            right: false,
+            up: false,
+            down: false
+          },
+          player: {
+            x: canvas.width / 2,
+            y: canvas.height - 86,
+            w: 34,
+            h: 42,
+            speed: 330
+          },
+          fireCooldown: 0,
+          enemyCooldown: 0,
+          timeScale: 1,
+          touchActive: false
+        };
+
+        let lastTs = 0;
+        let bestScore = Number(localStorage.getItem("plane-war-best-score") || 0);
+        updateHud();
+
+        for (let i = 0; i < 80; i += 1) {
+          gameState.stars.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            size: Math.random() * 2 + 0.6,
+            speed: 20 + Math.random() * 85
+          });
+        }
+
+        function resetGame() {
+          gameState.running = true;
+          gameState.score = 0;
+          gameState.hp = 3;
+          gameState.bullets = [];
+          gameState.enemies = [];
+          gameState.fireCooldown = 0;
+          gameState.enemyCooldown = 0.6;
+          gameState.timeScale = 1;
+          gameState.player.x = canvas.width / 2;
+          gameState.player.y = canvas.height - 86;
+          lastTs = 0;
+          updateHud();
+        }
+
+        function updateHud() {
+          scoreText.textContent = `得分：${gameState.score}`;
+          hpText.textContent = `生命：${gameState.hp}`;
+        }
+
+        function spawnEnemy() {
+          const tierRoll = Math.random();
+          const tier = tierRoll < 0.74 ? 1 : tierRoll < 0.94 ? 2 : 3;
+
+          let w;
+          let h;
+          let speed;
+          let hp;
+          let score;
+          if (tier === 1) {
+            w = 28;
+            h = 32;
+            speed = 120 + Math.random() * 45 + gameState.score * 0.2;
+            hp = 1;
+            score = 100;
+          } else if (tier === 2) {
+            w = 42;
+            h = 50;
+            speed = 95 + Math.random() * 35 + gameState.score * 0.15;
+            hp = 3;
+            score = 350;
+          } else {
+            w = 60;
+            h = 72;
+            speed = 72 + Math.random() * 22 + gameState.score * 0.1;
+            hp = 8;
+            score = 900;
+          }
+
+          gameState.enemies.push({
+            x: Math.random() * (canvas.width - w) + w / 2,
+            y: -h,
+            w,
+            h,
+            speed,
+            hp,
+            score,
+            tier
+          });
+        }
+
+        function fireBullet() {
+          const { x, y } = gameState.player;
+          gameState.bullets.push(
+            { x: x - 9, y: y - 16, w: 5, h: 16, speed: 480 },
+            { x: x + 9, y: y - 16, w: 5, h: 16, speed: 480 }
+          );
+        }
+
+        function intersects(a, b) {
+          return (
+            Math.abs(a.x - b.x) * 2 < a.w + b.w &&
+            Math.abs(a.y - b.y) * 2 < a.h + b.h
+          );
+        }
+
+        function gameOver() {
+          gameState.running = false;
+          bestScore = Math.max(bestScore, gameState.score);
+          localStorage.setItem("plane-war-best-score", String(bestScore));
+          finalScoreText.textContent = `本局得分：${gameState.score}`;
+          bestScoreText.textContent = `历史最高：${bestScore}`;
+          gameOverOverlay.hidden = false;
+        }
+
+        function update(dt) {
+          const p = gameState.player;
+          const moveX = (Number(gameState.keys.right) - Number(gameState.keys.left)) * p.speed * dt;
+          const moveY = (Number(gameState.keys.down) - Number(gameState.keys.up)) * p.speed * dt;
+          p.x = clamp(p.x + moveX, p.w / 2, canvas.width - p.w / 2);
+          p.y = clamp(p.y + moveY, p.h / 2, canvas.height - p.h / 2);
+
+          gameState.fireCooldown -= dt;
+          if (gameState.fireCooldown <= 0) {
+            fireBullet();
+            gameState.fireCooldown = 0.16;
+          }
+
+          gameState.enemyCooldown -= dt;
+          if (gameState.enemyCooldown <= 0) {
+            spawnEnemy();
+            const minGap = 0.2;
+            const dynamicGap = 0.8 - Math.min(0.55, gameState.score / 8500);
+            gameState.enemyCooldown = Math.max(minGap, dynamicGap) + Math.random() * 0.24;
+          }
+
+          for (const star of gameState.stars) {
+            star.y += star.speed * dt;
+            if (star.y > canvas.height + 4) {
+              star.y = -4;
+              star.x = Math.random() * canvas.width;
+            }
+          }
+
+          for (const b of gameState.bullets) {
+            b.y -= b.speed * dt;
+          }
+          gameState.bullets = gameState.bullets.filter((b) => b.y + b.h > -10);
+
+          for (const e of gameState.enemies) {
+            e.y += e.speed * dt;
+          }
+
+          for (const bullet of gameState.bullets) {
+            for (const enemy of gameState.enemies) {
+              if (enemy.hp > 0 && intersects(bullet, enemy)) {
+                enemy.hp -= 1;
+                bullet.y = -999;
+                if (enemy.hp <= 0) {
+                  gameState.score += enemy.score;
+                }
+                break;
+              }
+            }
+          }
+
+          gameState.bullets = gameState.bullets.filter((b) => b.y > -200);
+          gameState.enemies = gameState.enemies.filter((e) => e.y - e.h < canvas.height + 30 && e.hp > 0);
+
+          for (const enemy of gameState.enemies) {
+            if (intersects(enemy, p)) {
+              enemy.hp = 0;
+              gameState.hp -= enemy.tier;
+              if (gameState.hp <= 0) {
+                updateHud();
+                gameOver();
+                return;
+              }
+            } else if (enemy.y - enemy.h / 2 > canvas.height + 4) {
+              gameState.hp -= 1;
+              enemy.hp = 0;
+              if (gameState.hp <= 0) {
+                updateHud();
+                gameOver();
+                return;
+              }
+            }
+          }
+
+          gameState.enemies = gameState.enemies.filter((e) => e.hp > 0);
+          updateHud();
+        }
+
+        function drawBackground() {
+          const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+          grad.addColorStop(0, "#122640");
+          grad.addColorStop(1, "#060d1b");
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+          for (const star of gameState.stars) {
+            ctx.globalAlpha = 0.4 + (star.size / 3) * 0.6;
+            ctx.fillStyle = "#f4fcff";
+            ctx.fillRect(star.x, star.y, star.size, star.size);
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        function drawPlayer() {
+          const p = gameState.player;
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.fillStyle = "#6ad2ff";
+          ctx.beginPath();
+          ctx.moveTo(0, -p.h / 2);
+          ctx.lineTo(p.w / 2, p.h / 2);
+          ctx.lineTo(0, p.h / 4);
+          ctx.lineTo(-p.w / 2, p.h / 2);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.fillStyle = "#d8f6ff";
+          ctx.beginPath();
+          ctx.moveTo(0, -p.h / 2 + 8);
+          ctx.lineTo(7, 8);
+          ctx.lineTo(-7, 8);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
+
+        function drawBullets() {
+          ctx.fillStyle = "#ffe59f";
+          for (const b of gameState.bullets) {
+            ctx.fillRect(b.x - b.w / 2, b.y - b.h / 2, b.w, b.h);
+          }
+        }
+
+        function drawEnemies() {
+          for (const e of gameState.enemies) {
+            if (e.tier === 1) ctx.fillStyle = "#ff6b7c";
+            else if (e.tier === 2) ctx.fillStyle = "#ff985b";
+            else ctx.fillStyle = "#be6dff";
+
+            ctx.save();
+            ctx.translate(e.x, e.y);
+            ctx.beginPath();
+            ctx.moveTo(0, e.h / 2);
+            ctx.lineTo(e.w / 2, -e.h / 2);
+            ctx.lineTo(0, -e.h / 4);
+            ctx.lineTo(-e.w / 2, -e.h / 2);
+            ctx.closePath();
+            ctx.fill();
+
+            if (e.tier > 1) {
+              const hpRate = Math.max(0, e.hp / (e.tier === 2 ? 3 : 8));
+              ctx.fillStyle = "rgba(255,255,255,0.25)";
+              ctx.fillRect(-e.w / 2, e.h / 2 + 6, e.w, 4);
+              ctx.fillStyle = "#f5f9ff";
+              ctx.fillRect(-e.w / 2, e.h / 2 + 6, e.w * hpRate, 4);
+            }
+
+            ctx.restore();
+          }
+        }
+
+        function render(ts) {
+          if (!lastTs) lastTs = ts;
+          const rawDt = (ts - lastTs) / 1000;
+          lastTs = ts;
+          const dt = Math.min(0.033, rawDt);
+
+          drawBackground();
+
+          if (gameState.running) {
+            update(dt);
+          }
+
+          drawBullets();
+          drawEnemies();
+          drawPlayer();
+          requestAnimationFrame(render);
+        }
+
+        document.addEventListener("keydown", (event) => {
+          const key = KEY_MAP[event.key];
+          if (key) {
+            event.preventDefault();
+            gameState.keys[key] = true;
+          }
+        });
+
+        document.addEventListener("keyup", (event) => {
+          const key = KEY_MAP[event.key];
+          if (key) {
+            event.preventDefault();
+            gameState.keys[key] = false;
+          }
+        });
+
+        function updateByTouch(clientX, clientY) {
+          const rect = canvas.getBoundingClientRect();
+          const x = ((clientX - rect.left) / rect.width) * canvas.width;
+          const y = ((clientY - rect.top) / rect.height) * canvas.height;
+          gameState.player.x = clamp(x, gameState.player.w / 2, canvas.width - gameState.player.w / 2);
+          gameState.player.y = clamp(y, gameState.player.h / 2, canvas.height - gameState.player.h / 2);
+        }
+
+        canvas.addEventListener(
+          "touchstart",
+          (event) => {
+            gameState.touchActive = true;
+            updateByTouch(event.touches[0].clientX, event.touches[0].clientY);
+          },
+          { passive: true }
+        );
+        canvas.addEventListener(
+          "touchmove",
+          (event) => {
+            if (!gameState.touchActive) return;
+            updateByTouch(event.touches[0].clientX, event.touches[0].clientY);
+          },
+          { passive: true }
+        );
+        canvas.addEventListener("touchend", () => {
+          gameState.touchActive = false;
+        });
+
+        startBtn.addEventListener("click", () => {
+          startOverlay.hidden = true;
+          gameOverOverlay.hidden = true;
+          resetGame();
+        });
+
+        restartBtn.addEventListener("click", () => {
+          gameOverOverlay.hidden = true;
+          resetGame();
+        });
+
+        bestScoreText.textContent = `历史最高：${bestScore}`;
+        requestAnimationFrame(render);
+      })();
+    </script>
+  </body>
+</html>
